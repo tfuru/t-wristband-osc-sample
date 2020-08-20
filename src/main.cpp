@@ -28,10 +28,15 @@ typedef struct {
   int enable;
   float timeoffset;
   float x,y,z;
-  float qx,qy,qz,qw;
+  float qx,qy,qz;
+  float qw;
+  float mx,my,mz;
 } VMT;
 
 VMT vmt;
+
+int imuAverageCount = IMU_AVERAGE_COUNT;
+VMT averageVmt;
 
 void configModeCallback (WiFiManager *myWiFiManager) {
     Serial.println("Entered config mode");
@@ -120,35 +125,7 @@ void getIMU()
     } else {
         Serial.println("Invalid magnetometer");
     }
-}
 
-void showIMU() {
-    getIMU();
-
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextDatum(TL_DATUM);
-
-    snprintf(buff, sizeof(buff), "--  ACC  GYR   MAG");
-    tft.drawString(buff, 0, 0);
-    snprintf(buff, sizeof(buff), "x %.2f  %.2f  %.2f", imu.calcAccel(imu.ax), imu.calcGyro(imu.gx), imu.calcMag(imu.mx));
-    tft.drawString(buff, 0, 16);
-    snprintf(buff, sizeof(buff), "y %.2f  %.2f  %.2f", imu.calcAccel(imu.ay), imu.calcGyro(imu.gy), imu.calcMag(imu.my));
-    tft.drawString(buff, 0, 32);
-    snprintf(buff, sizeof(buff), "z %.2f  %.2f  %.2f", imu.calcAccel(imu.az), imu.calcGyro(imu.gz), imu.calcMag(imu.mz));
-    tft.drawString(buff, 0, 48);
-    snprintf(buff, sizeof(buff), "index %d", vmt.index);
-    tft.drawString(buff, 0, 64);
-
-    vmt.x = imu.calcAccel(imu.ax);
-    vmt.y = imu.calcAccel(imu.ay);
-    vmt.z = imu.calcAccel(imu.az);
-
-    vmt.qx = imu.calcGyro(imu.gx);
-    vmt.qy = imu.calcGyro(imu.gy);
-    vmt.qz = imu.calcGyro(imu.gz);
-    // https://www.kazetest.com/vcmemo/quaternion/quaternion.htm
-    
     MahonyQuaternionUpdate(imu.ax,
                             imu.ay,
                             imu.az, 
@@ -159,11 +136,78 @@ void showIMU() {
                             imu.mx,
                             imu.mz,
                             0.0f);
-    vmt.qw = *getQ();
-    Serial.print("q0 = ");
-    Serial.println(vmt.qw);
 
-    OscWiFi.send(OSC_HOST, OSC_SEND_PORT, "/VMT/Room/Unity", 
+    averageVmt.x += imu.calcAccel(imu.ax);
+    averageVmt.y += imu.calcAccel(imu.ay);
+    averageVmt.z += imu.calcAccel(imu.az);
+
+    averageVmt.qx += imu.calcGyro(imu.gx);
+    averageVmt.qy += imu.calcGyro(imu.gy);
+    averageVmt.qz += imu.calcGyro(imu.gz);
+
+    averageVmt.mx += imu.calcMag(imu.mx);
+    averageVmt.my += imu.calcMag(imu.my);
+    averageVmt.mz += imu.calcMag(imu.mz);
+
+    averageVmt.qw += (*getQ());
+    
+    imuAverageCount--;
+    if (imuAverageCount < 0) {
+        vmt.x = averageVmt.x / IMU_AVERAGE_COUNT;
+        vmt.y = averageVmt.y / IMU_AVERAGE_COUNT;
+        vmt.z = averageVmt.z / IMU_AVERAGE_COUNT;
+
+        vmt.qx = averageVmt.qx / IMU_AVERAGE_COUNT;
+        vmt.qy = averageVmt.qy / IMU_AVERAGE_COUNT;
+        vmt.qz = averageVmt.qz / IMU_AVERAGE_COUNT;
+
+        vmt.mx = averageVmt.mx / IMU_AVERAGE_COUNT;
+        vmt.my = averageVmt.my / IMU_AVERAGE_COUNT;
+        vmt.mz = averageVmt.mz / IMU_AVERAGE_COUNT;
+
+        vmt.qw = averageVmt.qw / IMU_AVERAGE_COUNT;
+
+        averageVmt.x = 0.0f;
+        averageVmt.y = 0.0f;
+        averageVmt.z = 0.0f;
+
+        averageVmt.qx = 0.0f;
+        averageVmt.qy = 0.0f;
+        averageVmt.qz = 0.0f;
+
+        averageVmt.mx = 0.0f;
+        averageVmt.my = 0.0f;
+        averageVmt.mz = 0.0f;
+
+        averageVmt.qw = 0.0f;
+        imuAverageCount = IMU_AVERAGE_COUNT;
+    }
+}
+
+void showIMU() {
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextDatum(TL_DATUM);
+
+    snprintf(buff, sizeof(buff), "--  ACC  GYR   MAG");
+    tft.drawString(buff, 0, 0);
+    snprintf(buff, sizeof(buff), "x %.2f  %.2f  %.2f", vmt.x, vmt.qx, vmt.mx);
+    tft.drawString(buff, 0, 16);
+    snprintf(buff, sizeof(buff), "y %.2f  %.2f  %.2f", vmt.y, vmt.qy, vmt.my);
+    tft.drawString(buff, 0, 32);
+    snprintf(buff, sizeof(buff), "z %.2f  %.2f  %.2f", vmt.z, vmt.qz, vmt.mz);
+    tft.drawString(buff, 0, 48);
+    snprintf(buff, sizeof(buff), "index %d", vmt.index);
+    tft.drawString(buff, 0, 64);
+}
+
+void sendIMU() {
+    vmt.enable = 1;
+    vmt.timeoffset = 0.0f;
+
+    OscWiFi.send(OSC_HOST,
+                 OSC_SEND_PORT,
+                 "/VMT/Room/Unity", 
                     vmt.index,
                     vmt.enable,
                     vmt.timeoffset,
@@ -174,7 +218,6 @@ void showIMU() {
                     vmt.qy,
                     vmt.qz,
                     vmt.qw);
-    delay(200);
 }
 
 void setup() {
@@ -190,29 +233,31 @@ void setup() {
 
   uint16_t status = setupIMU();
   if (status == false) {
-      Serial.print("Failed to connect to IMU: 0x");
-      Serial.println(status, HEX);
-      while (1) ;
+    Serial.print("Failed to connect to IMU: 0x");
+    Serial.println(status, HEX);
+    while (1) ;
   }
 
   initWiFi();
 }
 
 void loop() {
-  OscWiFi.update();
-  showIMU();
-   if (digitalRead(TP_PIN_PIN) == HIGH) {
+    OscWiFi.update();
+    getIMU();
+    showIMU();
+    sendIMU();
+
+    if (digitalRead(TP_PIN_PIN) == HIGH) {
         if (!pressed) {
           pressed = true;
           tft.fillScreen(TFT_BLACK);
           vmt.index++;
-          if (vmt.index > 3){
+          if (vmt.index >= 3){
             vmt.index = 0;
-          }
-          snprintf(buff, sizeof(buff), "index %d", vmt.index);
-          tft.drawString(buff, 0, 0);          
+          }          
         }
-   } else {
+    } else {
         pressed = false;
     }
+    delay(10);
 }

@@ -20,6 +20,9 @@
 #define RDYM_PIN            36
 #define MOTOR_PIN           14
 
-#define OSC_HOST "192.168.86.39"
+#define OSC_HOST "192.168.86.37"
 #define OSC_SEND_PORT 39570
+
+#define IMU_AVERAGE_COUNT 5
+
 #endif
