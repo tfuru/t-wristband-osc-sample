@@ -1,9 +1,10 @@
 #include <Arduino.h>
-#include <pcf8563.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
 #include <Wire.h>
 #include <WiFi.h>
+
+#include <Kalman.h>
 
 #include <SparkFunLSM9DS1.h>
 
@@ -13,30 +14,24 @@
 
 #include "config.h"
 #include "ttgo.h"
-#include "quaternionFilters.h"
 
 TFT_eSPI tft = TFT_eSPI();
-PCF8563_Class rtc;
+// PCF8563_Class rtc;
 LSM9DS1 imu;
 WiFiManager wifiManager;
 
 bool pressed = false;
 char buff[256];
 
+const float alpha = 0.8f;
 typedef struct {
   int index;
-  int enable;
-  float timeoffset;
-  float x,y,z;
-  float qx,qy,qz;
-  float qw;
-  float mx,my,mz;
+  float ax,ay,az;
+  float gx,gy,gz;
+  float mx,my,mz;  
 } VMT;
 
 VMT vmt;
-
-int imuAverageCount = IMU_AVERAGE_COUNT;
-VMT averageVmt;
 
 void configModeCallback (WiFiManager *myWiFiManager) {
     Serial.println("Entered config mode");
@@ -126,62 +121,20 @@ void getIMU()
         Serial.println("Invalid magnetometer");
     }
 
-    MahonyQuaternionUpdate(imu.ax,
-                            imu.ay,
-                            imu.az, 
-                            imu.gx * DEG_TO_RAD,
-                            imu.gy * DEG_TO_RAD,
-                            imu.gz * DEG_TO_RAD,
-                            imu.my,
-                            imu.mx,
-                            imu.mz,
-                            0.0f);
+    // 加速度
+    vmt.ax = imu.calcAccel(imu.ax);
+    vmt.ay = imu.calcAccel(imu.ay);
+    vmt.az = imu.calcAccel(imu.az);
 
-    averageVmt.x += imu.calcAccel(imu.ax);
-    averageVmt.y += imu.calcAccel(imu.ay);
-    averageVmt.z += imu.calcAccel(imu.az);
+    // ジャイロ
+    vmt.gx = imu.calcGyro(imu.gx);
+    vmt.gy = imu.calcGyro(imu.gy);
+    vmt.gz = imu.calcGyro(imu.gz);
 
-    averageVmt.qx += imu.calcGyro(imu.gx);
-    averageVmt.qy += imu.calcGyro(imu.gy);
-    averageVmt.qz += imu.calcGyro(imu.gz);
-
-    averageVmt.mx += imu.calcMag(imu.mx);
-    averageVmt.my += imu.calcMag(imu.my);
-    averageVmt.mz += imu.calcMag(imu.mz);
-
-    averageVmt.qw += (*getQ());
-    
-    imuAverageCount--;
-    if (imuAverageCount < 0) {
-        vmt.x = averageVmt.x / IMU_AVERAGE_COUNT;
-        vmt.y = averageVmt.y / IMU_AVERAGE_COUNT;
-        vmt.z = averageVmt.z / IMU_AVERAGE_COUNT;
-
-        vmt.qx = averageVmt.qx / IMU_AVERAGE_COUNT;
-        vmt.qy = averageVmt.qy / IMU_AVERAGE_COUNT;
-        vmt.qz = averageVmt.qz / IMU_AVERAGE_COUNT;
-
-        vmt.mx = averageVmt.mx / IMU_AVERAGE_COUNT;
-        vmt.my = averageVmt.my / IMU_AVERAGE_COUNT;
-        vmt.mz = averageVmt.mz / IMU_AVERAGE_COUNT;
-
-        vmt.qw = averageVmt.qw / IMU_AVERAGE_COUNT;
-
-        averageVmt.x = 0.0f;
-        averageVmt.y = 0.0f;
-        averageVmt.z = 0.0f;
-
-        averageVmt.qx = 0.0f;
-        averageVmt.qy = 0.0f;
-        averageVmt.qz = 0.0f;
-
-        averageVmt.mx = 0.0f;
-        averageVmt.my = 0.0f;
-        averageVmt.mz = 0.0f;
-
-        averageVmt.qw = 0.0f;
-        imuAverageCount = IMU_AVERAGE_COUNT;
-    }
+    // 磁力
+    vmt.mx = imu.calcMag(imu.mx);
+    vmt.my = imu.calcMag(imu.my);
+    vmt.mz = imu.calcMag(imu.mz);    
 }
 
 void showIMU() {
@@ -191,33 +144,32 @@ void showIMU() {
 
     snprintf(buff, sizeof(buff), "--  ACC  GYR   MAG");
     tft.drawString(buff, 0, 0);
-    snprintf(buff, sizeof(buff), "x %.2f  %.2f  %.2f", vmt.x, vmt.qx, vmt.mx);
+    snprintf(buff, sizeof(buff), "x %.2f  %.2f  %.2f", vmt.ax, vmt.gx, vmt.mx);
     tft.drawString(buff, 0, 16);
-    snprintf(buff, sizeof(buff), "y %.2f  %.2f  %.2f", vmt.y, vmt.qy, vmt.my);
+    snprintf(buff, sizeof(buff), "y %.2f  %.2f  %.2f", vmt.ay, vmt.gy, vmt.my);
     tft.drawString(buff, 0, 32);
-    snprintf(buff, sizeof(buff), "z %.2f  %.2f  %.2f", vmt.z, vmt.qz, vmt.mz);
+    snprintf(buff, sizeof(buff), "z %.2f  %.2f  %.2f", vmt.az, vmt.gz, vmt.mz);
     tft.drawString(buff, 0, 48);
     snprintf(buff, sizeof(buff), "index %d", vmt.index);
     tft.drawString(buff, 0, 64);
 }
 
 void sendIMU() {
-    vmt.enable = 1;
-    vmt.timeoffset = 0.0f;
-
+    // IMUデータ そのまま OSCで送信する
+    // DEVICE ax,ay,az,gx,gy,gz,mx,my,mz
     OscWiFi.send(OSC_HOST,
                  OSC_SEND_PORT,
-                 "/VMT/Room/Unity", 
+                 "/DEVICE", 
                     vmt.index,
-                    vmt.enable,
-                    vmt.timeoffset,
-                    vmt.x,
-                    vmt.y,
-                    vmt.z,
-                    vmt.qx,
-                    vmt.qy,
-                    vmt.qz,
-                    vmt.qw);
+                    vmt.ax,
+                    vmt.ay,
+                    vmt.az,
+                    vmt.gx,
+                    vmt.gy,
+                    vmt.gz,
+                    vmt.mx,
+                    vmt.my,
+                    vmt.mz);
 }
 
 void setup() {
@@ -247,6 +199,7 @@ void loop() {
     showIMU();
     sendIMU();
 
+    // 画面タッチで index 切り替え
     if (digitalRead(TP_PIN_PIN) == HIGH) {
         if (!pressed) {
           pressed = true;
