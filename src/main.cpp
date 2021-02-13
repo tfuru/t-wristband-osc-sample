@@ -4,8 +4,6 @@
 #include <Wire.h>
 #include <WiFi.h>
 
-#include <Kalman.h>
-
 #include <SparkFunLSM9DS1.h>
 
 #include <WiFiManager.h>
